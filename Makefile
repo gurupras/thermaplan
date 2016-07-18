@@ -4,8 +4,10 @@ vpath %.h $(INCLUDE)
 
 LDFLAGS=-L.
 
-sources=main
+sources=main netlink common
+test_sources=test_main netlink common
 sources_go=$(patsubst %,%.go,$(sources))
+test_sources_go=$(patsubst %,%.go,$(test_sources))
 GOARCH=
 
 all: binary
@@ -23,6 +25,9 @@ shared:
 
 static:
 	go build -buildmode=c-archive -o libaosp_su_daemon.a $(sources_go)
+
+test: sources=$(test_sources)
+test: arm
 
 phone: arm
 	adb push $(PROG_NAME) /system/bin/$(PROG_NAME)
