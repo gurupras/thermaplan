@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"strings"
 	"syscall"
 )
 
@@ -103,35 +102,4 @@ func InitializeNetlinkConnection() (err error) {
 		}
 	}
 	return
-}
-
-func NetlinkRecvHandler() {
-	var messages []syscall.NetlinkMessage
-	var err error
-
-	log("Starting NetlinkRecvHandler()")
-	for {
-		log("recvHandler loop")
-		if messages, err = Socket.Recv(); err != nil {
-			log("Failed recv:", err)
-		}
-		for m := range messages {
-			message := messages[m]
-
-			real_len := binary.LittleEndian.Uint32(message.Data[:4])
-			//log("Real len:", real_len)
-			text := strings.TrimSpace(string(message.Data[4 : 4+real_len]))
-			switch text {
-			case "0":
-				// Kernel is disabling mpdecision blocking
-				log("Kernel disabling mpdecision blocking")
-			case "1":
-				// Kernel is enabling mpdecision blocking
-				log("Kernel enabling mpdecision blocking")
-			default:
-				log(fmt.Sprintf("Unknown message from kernel: '%s'", text))
-			}
-		}
-	}
-	log("Finished NetlinkRecvHandler()")
 }

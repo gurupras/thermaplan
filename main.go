@@ -2,10 +2,13 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/alecthomas/kingpin"
@@ -377,14 +380,113 @@ func AddWatcher(container *InotifyContainer) (err error) {
 	return
 }
 
+var (
+	isBlocked  = false
+	signalChan = make(chan struct{}, 0)
+)
+
+func BlockMpdecision(signal chan struct{}) {
+	var b []byte
+	var err error
+	var bgCpus string
+	bgNotifyContainer := new(InotifyContainer)
+
+	bgCpuFile := "/sys/tempfreq/mpdecision_bg_cpu"
+	bgCpusetCpusFile := "/sys/fs/cgroup/cpuset/bg_non_interactive/cpuset.cpus"
+	bgCpusetMemsFile := "/sys/fs/cgroup/cpuset/bg_non_interactive/cpuset.mems"
+
+	if isBlocked {
+		log("Attempting to block mpdecision when blocked")
+		err = fmt.Errorf("Already blocked")
+		goto out
+	}
+
+	isBlocked = true
+
+	if b, err = ioutil.ReadFile(bgCpuFile); err != nil {
+		log(fmt.Sprintf("Failed to read '%s': %s", bgCpuFile, err))
+		return
+	}
+	bgCpus = string(b[:])
+
+	if err = write(bgCpusetMemsFile, "0"); err != nil {
+		log("Failed to set mems to '0':", err)
+		goto out
+	}
+	if err = write(bgCpusetCpusFile, bgCpus); err != nil {
+		log(fmt.Sprintf("Failed to set cpus to '%s':%v", bgCpus, err))
+		goto out
+	}
+
+	bgNotifyContainer.FilePath = "/dev/cpuctl/bg_non_interactive/tasks"
+	bgNotifyContainer.NotifyChannel = make(chan struct{}, 0)
+	bgNotifyContainer.Handler = BgCgroupHandler
+	AddWatcher(bgNotifyContainer)
+out:
+	// Signal that we're done
+	signal <- struct{}{}
+
+	if err == nil {
+		// Now wait for unblock to signal us to terminate
+		<-signalChan
+		log("Received signal to unblock")
+	}
+	bgNotifyContainer.IsDone = true
+}
+
+func UnblockMpdecision(signal chan struct{}) {
+	if !isBlocked {
+		log("Attempting to unblock mpdecision when not blocked")
+		goto out
+	}
+	// Signal block to terminate
+	signalChan <- struct{}{}
+	log("Sent signal to unblock")
+	isBlocked = false
+out:
+	// Signal that we're done
+	signal <- struct{}{}
+}
+
+func NetlinkRecvHandler() {
+	var messages []syscall.NetlinkMessage
+	var err error
+
+	log("Starting NetlinkRecvHandler()")
+	signal := make(chan struct{}, 0)
+	for {
+		log("recvHandler loop")
+		if messages, err = Socket.Recv(); err != nil {
+			log("Failed recv:", err)
+		}
+		for m := range messages {
+			message := messages[m]
+
+			real_len := binary.LittleEndian.Uint32(message.Data[:4])
+			//log("Real len:", real_len)
+			text := strings.TrimSpace(string(message.Data[4 : 4+real_len]))
+			switch text {
+			case "0":
+				// Kernel is disabling mpdecision blocking
+				log("Kernel disabling mpdecision blocking")
+				go UnblockMpdecision(signal)
+				<-signal
+				Socket.SendString("0")
+			case "1":
+				// Kernel is enabling mpdecision blocking
+				log("Kernel enabling mpdecision blocking")
+				go BlockMpdecision(signal)
+				<-signal
+				Socket.SendString("1")
+			default:
+				log(fmt.Sprintf("Unknown message from kernel: '%s'", text))
+			}
+		}
+	}
+	log("Finished NetlinkRecvHandler()")
+}
+
 func Process() (err error) {
-	/*
-		bgNotifyContainer := new(InotifyContainer)
-		bgNotifyContainer.FilePath = "/dev/cpuctl/bg_non_interactive/tasks"
-		bgNotifyContainer.NotifyChannel = make(chan struct{}, 0)
-		bgNotifyContainer.Handler = BgCgroupHandler
-		AddWatcher(bgNotifyContainer)
-	*/
 	/*
 		// XXX: Currently, mpdecision upcall handler does not work as expected
 		// sysfs_notify is not making its way to fsnotify
