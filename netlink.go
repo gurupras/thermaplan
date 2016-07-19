@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"syscall"
 )
 
@@ -56,13 +57,14 @@ func (nl *NetlinkSocket) Recv() (messages []syscall.NetlinkMessage, err error) {
 
 	b := make([]byte, syscall.Getpagesize())
 	if nr, _, err = syscall.Recvfrom(nl.Fd, b, 0); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed recvfrom():", err)
 	}
-	if nr < 0 {
+	if nr < syscall.NLMSG_HDRLEN {
 		return nil, fmt.Errorf(fmt.Sprintf("Short message from netlink socket received=%d", nr))
 	}
+	b = b[:nr]
 	if messages, err = syscall.ParseNetlinkMessage(b); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed syscall.ParseNetlinkMessag():", err)
 	}
 	return
 }
@@ -112,11 +114,13 @@ func NetlinkRecvHandler() {
 		log("recvHandler loop")
 		if messages, err = Socket.Recv(); err != nil {
 			log("Failed recv:", err)
-			break
 		}
 		for m := range messages {
 			message := messages[m]
-			text := string(message.Data[:])
+
+			real_len := binary.LittleEndian.Uint32(message.Data[:4])
+			//log("Real len:", real_len)
+			text := strings.TrimSpace(string(message.Data[4 : 4+real_len]))
 			switch text {
 			case "0":
 				// Kernel is disabling mpdecision blocking
@@ -124,6 +128,8 @@ func NetlinkRecvHandler() {
 			case "1":
 				// Kernel is enabling mpdecision blocking
 				log("Kernel enabling mpdecision blocking")
+			default:
+				log(fmt.Sprintf("Unknown message from kernel: '%s'", text))
 			}
 		}
 	}
