@@ -38,6 +38,7 @@ type InotifyContainer struct {
 	File          *gocommons.File
 	Handler       FsNotifyHandler
 	NotifyChannel chan struct{}
+	IsDone        bool
 }
 
 var bgCgroupHandlerStarted bool = false
@@ -76,24 +77,34 @@ func migrateTasks(inputFile, outputFile *gocommons.File) (err error) {
 			log(fmt.Sprintf("Failed to write '%s' > %s", pid, outputFile.Path))
 			return
 		}
+		writer.Flush()
 	}
 	log(fmt.Sprintf("cat %s > %s (Wrote: %d lines)", tmpInputFile.Path, outputFile.Path, numLines))
 	return
 }
 
 func GroupRequests(container *InotifyContainer, pollPeriod time.Duration, groupPeriod time.Duration, fsnotifyEventsMask fsnotify.Op, work func() error) {
-	defer container.File.Close()
+	if container.File != nil {
+		defer container.File.Close()
+	}
 	defer container.Watcher.Close()
 
 	var err error
-	workChan := make(chan struct{}, 100)
+	workChan := make(chan struct{}, 100000)
+	defer close(workChan)
 
+	var done bool = false
 	go func() {
+		mergedChan := make(chan string, 100000)
 		pollerChan := make(chan struct{}, 0)
-		mergedChan := make(chan string, 0)
+		defer close(mergedChan)
+		defer close(pollerChan)
 
 		poller := func(controlChan chan struct{}) {
 			for {
+				if done {
+					break
+				}
 				select {
 				case <-controlChan:
 					break
@@ -110,19 +121,27 @@ func GroupRequests(container *InotifyContainer, pollPeriod time.Duration, groupP
 		// WorkChan handler
 		go func() {
 			var lastWorkTime int64 = 0
-			var period int64 = 50 * 1000 * 1000
+			var period int64 = 150 * 1000 * 1000
 			for {
+				if done {
+					break
+				}
 				if _, ok := <-workChan; !ok {
+					pollerChan <- struct{}{}
 					break
 				} else {
 					now := time.Now().UnixNano()
 					if now-lastWorkTime >= period {
 						mergedChan <- "work"
+						lastWorkTime = now
 					}
 				}
 			}
 		}()
 		for {
+			if done {
+				break
+			}
 			if data, ok := <-mergedChan; !ok {
 				log("Breaking widowMaker routine")
 				break
@@ -153,6 +172,9 @@ func GroupRequests(container *InotifyContainer, pollPeriod time.Duration, groupP
 		}
 	}()
 	for {
+		if container.IsDone {
+			break
+		}
 		event := <-container.Watcher.Events
 		if event.Op&fsnotifyEventsMask != 0 {
 			//log("bg cgroup file received write")
@@ -161,6 +183,8 @@ func GroupRequests(container *InotifyContainer, pollPeriod time.Duration, groupP
 			//log("bg cgroup file received: ", event.Op)
 		}
 	}
+	done = true
+	log("Finished GroupRequests()")
 }
 
 func FgBgMigrationHandler(container *InotifyContainer) {
@@ -194,7 +218,7 @@ func FgBgMigrationHandler(container *InotifyContainer) {
 }
 
 func BgCgroupHandler(container *InotifyContainer) {
-	bgCpusetTasksFile := "/sys/fs/cgroup/cpuset/bg_non_interactive/tasks"
+	bgCpusetTasksFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/tasks"
 
 	if bgCgroupHandlerStarted {
 		return
@@ -231,7 +255,7 @@ func MpdecisionCoexistUpcallHandler(container *InotifyContainer) {
 
 	handleUpcall := func() {
 		var err error
-		file := "/dev/cpuctl/bg_non_interactive/cpuset.cpus"
+		file := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.cpus"
 		rootCpusetCpus := "/sys/fs/cgroup/cpuset/cpuset.cpus"
 
 		log("Handling mpdecision upcall")
@@ -389,11 +413,15 @@ func BlockMpdecision(signal chan struct{}) {
 	var b []byte
 	var err error
 	var bgCpus string
-	bgNotifyContainer := new(InotifyContainer)
+	var bgCgroupTf *gocommons.File
+	var bgCpusetTf *gocommons.File
+	//bgNotifyContainer := new(InotifyContainer)
 
 	bgCpuFile := "/sys/tempfreq/mpdecision_bg_cpu"
-	bgCpusetCpusFile := "/sys/fs/cgroup/cpuset/bg_non_interactive/cpuset.cpus"
-	bgCpusetMemsFile := "/sys/fs/cgroup/cpuset/bg_non_interactive/cpuset.mems"
+	bgCpusetCpusFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.cpus"
+	bgCpusetMemsFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.mems"
+	bgCpusetTasksFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/tasks"
+	bgCgroupTasksFile := "/dev/cpuctl/bg_non_interactive/tasks"
 
 	if isBlocked {
 		log("Attempting to block mpdecision when blocked")
@@ -418,10 +446,31 @@ func BlockMpdecision(signal chan struct{}) {
 		goto out
 	}
 
-	bgNotifyContainer.FilePath = "/dev/cpuctl/bg_non_interactive/tasks"
-	bgNotifyContainer.NotifyChannel = make(chan struct{}, 0)
-	bgNotifyContainer.Handler = BgCgroupHandler
-	AddWatcher(bgNotifyContainer)
+	if bgCgroupTf, err = gocommons.Open(bgCgroupTasksFile, os.O_RDONLY, gocommons.GZ_FALSE); err != nil {
+		log("Could not open bg cgroup tasks file for copying to bg cpuset")
+		goto out
+	}
+	defer bgCgroupTf.Close()
+
+	if bgCpusetTf, err = gocommons.Open(bgCpusetTasksFile, os.O_WRONLY, gocommons.GZ_FALSE); err != nil {
+		log("Could not open bg cpuset tasks file for writing")
+		goto out
+	}
+	defer bgCpusetTf.Close()
+
+	if err = migrateTasks(bgCgroupTf, bgCpusetTf); err != nil {
+		log("Failed to migrate tasks from bg cgroup to bg cpuset")
+		goto out
+	}
+
+	// We don't add a watcher since the kernel takes care of doing this
+	// once we send it the signal that we've set up the cpuset
+	/*
+		bgNotifyContainer.FilePath = "/dev/cpuctl/bg_non_interactive/tasks"
+		bgNotifyContainer.NotifyChannel = make(chan struct{}, 0)
+		bgNotifyContainer.Handler = BgCgroupHandler
+		AddWatcher(bgNotifyContainer)
+	*/
 out:
 	// Signal that we're done
 	signal <- struct{}{}
@@ -431,10 +480,19 @@ out:
 		<-signalChan
 		log("Received signal to unblock")
 	}
-	bgNotifyContainer.IsDone = true
+	//bgNotifyContainer.IsDone = true
 }
 
 func UnblockMpdecision(signal chan struct{}) {
+	var rootCpusetTf *gocommons.File
+	var bgCpusetTf *gocommons.File
+	var err error
+
+	rootTasksFile := "/sys/fs/cgroup/cpuset/tasks"
+	bgCpusetTasksFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/tasks"
+	bgCpusetCpusFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.cpus"
+	bgCpusetMemsFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.mems"
+
 	if !isBlocked {
 		log("Attempting to unblock mpdecision when not blocked")
 		goto out
@@ -443,6 +501,31 @@ func UnblockMpdecision(signal chan struct{}) {
 	signalChan <- struct{}{}
 	log("Sent signal to unblock")
 	isBlocked = false
+	if err = write(bgCpusetMemsFile, ""); err != nil {
+		log("Unblock: Failed to set mems to '':", err)
+		goto out
+	}
+	if err = write(bgCpusetCpusFile, ""); err != nil {
+		log(fmt.Sprintf("Unblock: Failed to set cpus to '':%v", err))
+		goto out
+	}
+
+	if bgCpusetTf, err = gocommons.Open(bgCpusetTasksFile, os.O_RDONLY, gocommons.GZ_FALSE); err != nil {
+		log("Could not open root bg cpuset tasks file for copying to root cpuset")
+		return
+	}
+	defer bgCpusetTf.Close()
+
+	if rootCpusetTf, err = gocommons.Open(rootTasksFile, os.O_WRONLY, gocommons.GZ_FALSE); err != nil {
+		log("Could not open root cpuset tasks file for writing")
+		return
+	}
+	defer rootCpusetTf.Close()
+
+	if err = migrateTasks(bgCpusetTf, rootCpusetTf); err != nil {
+		log(fmt.Sprintf("Unblock: Failed to migrate tasks:%v", err))
+		goto out
+	}
 out:
 	// Signal that we're done
 	signal <- struct{}{}
