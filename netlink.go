@@ -41,10 +41,11 @@ func (nl *NetlinkSocket) Send(b []byte) error {
 
 	SeqNum++
 	buf := bytes.NewBuffer(nil)
-	msg.Header.Len = uint32(syscall.NLMSG_HDRLEN + len(b))
+	msg.Header.Len = uint32(syscall.NLMSG_HDRLEN + 4 + len(b))
 	msg.Header.Seq = SeqNum
 	msg.Header.Pid = nl.Addr.Pid
 	binary.Write(buf, binary.LittleEndian, msg.Header)
+	binary.Write(buf, binary.LittleEndian, len(b))
 	buf.Write(b)
 	//return syscall.Sendto(nl.Fd, buf.Bytes(), 0, &nl.Addr)
 	log(fmt.Sprintf("Sending %d bytes", len(buf.Bytes())))
