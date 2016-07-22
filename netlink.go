@@ -22,6 +22,43 @@ type SocketInterface interface {
 	Recv() ([]syscall.NetlinkMessage, error)
 }
 
+type NetlinkPacket struct {
+	NlMsgHdr syscall.NlMsghdr
+	Magic    string
+	Length   uint32
+	Data     *[]byte
+}
+
+func NewNetlinkPacket() (pkt *NetlinkPacket) {
+	pkt = new(NetlinkPacket)
+	pkt.Magic = "@"
+	return
+}
+
+func (n *NetlinkPacket) Bytes() []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.LittleEndian, n.NlMsgHdr)
+	log("After header:", buf.Len())
+
+	buf.Write([]byte(n.Magic))
+	log("After magic:", buf.Len())
+
+	rlBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(rlBytes, n.Length)
+	buf.Write(rlBytes)
+	log("After len:", buf.Len())
+
+	buf.Write(*n.Data)
+	log("After data:", buf.Len())
+
+	return buf.Bytes()
+}
+
+func (n *NetlinkPacket) UpdateDataLength(dataLen uint32) {
+	n.NlMsgHdr.Len = uint32(syscall.NLMSG_HDRLEN + 1 + 4 + dataLen)
+	n.Length = dataLen
+}
+
 type NetlinkSocket struct {
 	Fd   int
 	Addr syscall.SockaddrNetlink
@@ -32,24 +69,26 @@ func (nl *NetlinkSocket) SendString(message string) error {
 }
 
 func (nl *NetlinkSocket) Send(b []byte) error {
-	var msg syscall.NetlinkMessage
 	var destAddr syscall.SockaddrNetlink
+
+	pkt := NewNetlinkPacket()
+
+	realLength := uint32(len(b))
 
 	destAddr.Family = syscall.AF_NETLINK
 	destAddr.Pid = 0
 	destAddr.Groups = 1
 
 	SeqNum++
-	buf := bytes.NewBuffer(nil)
-	msg.Header.Len = uint32(syscall.NLMSG_HDRLEN + 4 + len(b))
-	msg.Header.Seq = SeqNum
-	msg.Header.Pid = nl.Addr.Pid
-	binary.Write(buf, binary.LittleEndian, msg.Header)
-	binary.Write(buf, binary.LittleEndian, len(b))
-	buf.Write(b)
-	//return syscall.Sendto(nl.Fd, buf.Bytes(), 0, &nl.Addr)
-	log(fmt.Sprintf("Sending %d bytes", len(buf.Bytes())))
-	return syscall.Sendmsg(nl.Fd, buf.Bytes(), nil, &destAddr, 0)
+	pkt.UpdateDataLength(realLength)
+	pkt.NlMsgHdr.Seq = SeqNum
+	pkt.NlMsgHdr.Pid = nl.Addr.Pid
+
+	pkt.Data = &b
+	pktBytes := pkt.Bytes()
+
+	log(fmt.Sprintf("Sending %d bytes", len(pktBytes)))
+	return syscall.Sendmsg(nl.Fd, pktBytes, nil, &destAddr, 0)
 }
 
 func (nl *NetlinkSocket) Recv() (messages []syscall.NetlinkMessage, err error) {
