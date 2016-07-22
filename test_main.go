@@ -1,5 +1,36 @@
 package main
 
+import (
+	"encoding/binary"
+	"fmt"
+	"strings"
+	"syscall"
+)
+
+func NetlinkRecvHandler() {
+	var messages []syscall.NetlinkMessage
+	var err error
+
+	log("Starting NetlinkRecvHandler()")
+	for {
+		if messages, err = Socket.Recv(); err != nil {
+			log("Failed recv:", err)
+		}
+		for m := range messages {
+			message := messages[m]
+
+			real_len := binary.LittleEndian.Uint32(message.Data[:4])
+			//log("Real len:", real_len)
+			text := strings.TrimSpace(string(message.Data[4 : 4+real_len]))
+			switch text {
+			default:
+				log(fmt.Sprintf("Message from kernel: '%s'", text))
+			}
+		}
+	}
+	log("Finished NetlinkRecvHandler()")
+}
+
 func main() {
 	var err error
 
@@ -20,5 +51,5 @@ func main() {
 			}
 		}
 	*/
-	NetlinkRecvHandler()
+	//	NetlinkRecvHandler()
 }
