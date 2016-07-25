@@ -586,6 +586,10 @@ func Process() (err error) {
 		FgBgMigrationContainer.Handler = FgBgMigrationHandler
 		AddWatcher(FgBgMigrationContainer)
 	*/
+	bgCpu := *bg_cpu
+	write("/sys/tempfreq/mpdecision_bg_cpu", bgCpu)
+	log("Informed kernel that background cpu is:", bgCpu)
+
 	if err = InitializeNetlinkConnection(); err != nil {
 		return
 	}
