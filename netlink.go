@@ -29,6 +29,15 @@ type NetlinkPacket struct {
 	Data     *[]byte
 }
 
+type NetlinkCmd struct {
+	Cmd  string
+	Args string
+}
+
+func (cmd *NetlinkCmd) String() string {
+	return fmt.Sprintf("%v:%v", cmd.Cmd, cmd.Args)
+}
+
 func NewNetlinkPacket() (pkt *NetlinkPacket) {
 	pkt = new(NetlinkPacket)
 	pkt.Magic = "@"

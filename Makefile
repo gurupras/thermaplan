@@ -4,8 +4,8 @@ vpath %.h $(INCLUDE)
 
 LDFLAGS=-L.
 
-sources=main netlink common
-test_sources=test_main netlink common
+sources=main netlink common mpdecision_handler
+test_sources=test_main netlink common mpdecision_handler
 sources_go=$(patsubst %,%.go,$(sources))
 test_sources_go=$(patsubst %,%.go,$(test_sources))
 GOARCH=

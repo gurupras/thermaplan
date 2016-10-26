@@ -1,12 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"encoding/binary"
 	"fmt"
-	"io/ioutil"
 	"os"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -43,148 +40,61 @@ type InotifyContainer struct {
 
 var bgCgroupHandlerStarted bool = false
 
-func migrateTasks(inputFile, outputFile *gocommons.File) (err error) {
-	var tmpInputFile *gocommons.File
-	var reader *bufio.Scanner
-	var writer gocommons.Writer
-
-	if tmpInputFile, err = gocommons.Open(inputFile.Path, os.O_RDONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open bg cgroup tasks file for copying to bg cpuset")
-		return
-	}
-	defer tmpInputFile.Close()
-
-	if _, err = tmpInputFile.Seek(0, 0); err != nil {
-		log("Failed to seek on:", tmpInputFile.Path)
-	}
-
-	if reader, err = tmpInputFile.Reader(0); err != nil {
-		log("Could not get reader to inputFile")
-		return
-	}
-	if writer, err = outputFile.Writer(0); err != nil {
-		log("Could not get writer to bg cpuset tasks file")
-		return
-	}
-	defer writer.Flush()
-
-	reader.Split(bufio.ScanLines)
-	numLines := 0
-	for reader.Scan() {
-		numLines++
-		pid := reader.Text()
-		if _, err = writer.Write([]byte(pid)); err != nil {
-			log(fmt.Sprintf("Failed to write '%s' > %s", pid, outputFile.Path))
-			return
-		}
-		writer.Flush()
-	}
-	log(fmt.Sprintf("cat %s > %s (Wrote: %d lines)", tmpInputFile.Path, outputFile.Path, numLines))
-	return
-}
-
-func GroupRequests(container *InotifyContainer, pollPeriod time.Duration, groupPeriod time.Duration, fsnotifyEventsMask fsnotify.Op, work func() error) {
-	if container.File != nil {
-		defer container.File.Close()
-	}
-	defer container.Watcher.Close()
-
+func NetlinkRecvHandler() {
+	var messages []syscall.NetlinkMessage
 	var err error
-	workChan := make(chan struct{}, 100000)
-	defer close(workChan)
 
-	var done bool = false
-	go func() {
-		mergedChan := make(chan string, 100000)
-		pollerChan := make(chan struct{}, 0)
-		defer close(mergedChan)
-		defer close(pollerChan)
-
-		poller := func(controlChan chan struct{}) {
-			for {
-				if done {
-					break
-				}
-				select {
-				case <-controlChan:
-					break
-				default:
-					mergedChan <- "poll"
-					time.Sleep(pollPeriod)
-				}
-			}
-		}
-
-		runningPoller := false
-		var lastTime int64 = 0
-		period := int64(150 * 000 * 000)
-		// WorkChan handler
-		go func() {
-			var lastWorkTime int64 = 0
-			var period int64 = 150 * 1000 * 1000
-			for {
-				if done {
-					break
-				}
-				if _, ok := <-workChan; !ok {
-					pollerChan <- struct{}{}
-					break
-				} else {
-					now := time.Now().UnixNano()
-					if now-lastWorkTime >= period {
-						mergedChan <- "work"
-						lastWorkTime = now
-					}
-				}
-			}
-		}()
-		for {
-			if done {
-				break
-			}
-			if data, ok := <-mergedChan; !ok {
-				log("Breaking widowMaker routine")
-				break
-			} else {
-				switch data {
-				case "work":
-					if !runningPoller {
-						// Inform poller to start
-						runningPoller = true
-						go poller(pollerChan)
-					}
-					lastTime = time.Now().UnixNano()
-				case "poll":
-					now := time.Now().UnixNano()
-					if now-lastTime > period {
-						if err = work(); err != nil {
-							break
-						}
-						// Stop poller
-						runningPoller = false
-						pollerChan <- struct{}{}
-					}
-				default:
-					log("Unknown command:", data)
-					break
-				}
-			}
-		}
-	}()
+	log("Starting NetlinkRecvHandler()")
+	signal := make(chan struct{}, 0)
 	for {
-		if container.IsDone {
-			break
+		log("recvHandler loop")
+		if messages, err = Socket.Recv(); err != nil {
+			log("Failed recv:", err)
 		}
-		event := <-container.Watcher.Events
-		if event.Op&fsnotifyEventsMask != 0 {
-			//log("bg cgroup file received write")
-			workChan <- struct{}{}
-		} else {
-			//log("bg cgroup file received: ", event.Op)
+		for m := range messages {
+			message := messages[m]
+
+			pos := uint32(0)
+			real_len := binary.LittleEndian.Uint32(message.Data[:pos+4])
+			_ = real_len
+			log("Real len:", real_len)
+			pos += 4
+
+			cmdLen := binary.LittleEndian.Uint32(message.Data[pos : pos+4])
+			log("cmdLen:", cmdLen)
+			pos += 4
+
+			cmdBytes := message.Data[pos : pos+16]
+			command := strings.TrimSpace(string(cmdBytes[:cmdLen]))
+			log("command:", command)
+			pos += 16
+
+			argsLen := binary.LittleEndian.Uint32(message.Data[pos : pos+4])
+			log("argsLen:", argsLen)
+			pos += 4
+
+			argsBytes := message.Data[pos : pos+24]
+			args := strings.TrimSpace(string(argsBytes[:argsLen]))
+			log("args:", args)
+			pos += 24
+
+			cmd := new(NetlinkCmd)
+			cmd.Cmd = command
+			cmd.Args = args
+
+			log(fmt.Sprintf("Command: %v", cmd.String()))
+
+			switch cmd.Cmd {
+			case "mpdecision":
+				MpdecisionHandler(cmd, signal)
+			default:
+				log(fmt.Sprintf("Unknown command: %v", cmd.String()))
+			}
 		}
 	}
-	done = true
-	log("Finished GroupRequests()")
+	goto out
+out:
+	log("Finished NetlinkRecvHandler()")
 }
 
 func FgBgMigrationHandler(container *InotifyContainer) {
@@ -250,141 +160,6 @@ func BgCgroupHandler(container *InotifyContainer) {
 	container.NotifyChannel <- struct{}{}
 }
 
-func MpdecisionCoexistUpcallHandler(container *InotifyContainer) {
-	var mpdecisionBlocked int = -1
-
-	handleUpcall := func() {
-		var err error
-		file := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.cpus"
-		rootCpusetCpus := "/sys/fs/cgroup/cpuset/cpuset.cpus"
-
-		log("Handling mpdecision upcall")
-
-		switch mpdecisionBlocked {
-		case 1:
-			cpus := "0"
-			if err = write(file, cpus); err != nil {
-				log(fmt.Sprintf("Failed to write '%s' to: %s", cpus, file))
-				break
-			}
-		case 0:
-			cpus := "0-3"
-			// First write this to the root cpuset
-			if err = write(rootCpusetCpus, cpus); err != nil {
-				log(fmt.Sprintf("Failed to write '%s' to: %s", cpus, rootCpusetCpus))
-				break
-			}
-
-			if err = write(file, "0"); err != nil {
-				log(fmt.Sprintf("Failed to write '%s' to: %s", cpus, file))
-				break
-			}
-		default:
-			log("Unknown mpdecisionBlocked state:", mpdecisionBlocked)
-		}
-	}
-
-	work := func() error {
-		var err error
-
-		filePath := "/sys/tempfreq/mpdecision_coexist_upcall"
-		var bytes []byte
-		if bytes, err = ioutil.ReadFile(filePath); err != nil {
-			log("Failed to read file:", filePath)
-			return err
-		} else {
-			text := string(bytes[:])
-			if val, err := strconv.Atoi(text); err != nil {
-				log(fmt.Sprintf("Failed to convert '%s' to int", text))
-				return err
-			} else {
-				if mpdecisionBlocked == -1 {
-					mpdecisionBlocked = val
-				} else if mpdecisionBlocked != val {
-					// mpdecisionBlocked is not -1 (it is initialized), but its not equal to current value
-					mpdecisionBlocked = val
-					handleUpcall()
-				}
-			}
-		}
-		return err
-	}
-	ops := fsnotify.Chmod | fsnotify.Create | fsnotify.Remove | fsnotify.Rename | fsnotify.Write
-	GroupRequests(container, 100*time.Millisecond, 150*time.Millisecond, ops, work)
-	container.NotifyChannel <- struct{}{}
-}
-
-/*
-func MpdecisionUpcallHandler(container *InotifyContainer) {
-	log("Starting watcher: mpdecision")
-	var mpdecisionBlocked int = -1
-
-		poll := func() {
-			var file *gocommons.File
-			var reader *bufio.Scanner
-			var err error
-
-			if file, err = gocommons.Open(container.FilePath, os.O_RDONLY, gocommons.GZ_FALSE); err != nil {
-				log("Could not open bg cgroup tasks file for copying to bg cpuset")
-				break
-			}
-			defer file.Close()
-			if reader, err = file.Reader(0); err != nil {
-				log("Could not get reader to bg cgroup tasks file")
-				break
-			}
-			var state string
-			reader.Split(bufio.ScanLines)
-			for reader.Scan() {
-				state = reader.Text()
-			}
-			if mpdecisionBlocked, err = strconv.Atoi(state); err != nil {
-				log(fmt.Sprintf("Could not convert '%s' to int", state))
-				break
-			} else {
-				handleUpcall(mpdecisionBlocked)
-			}
-		}
-
-	handleUpcall := func() {
-		var err error
-		file := "/dev/cpuctl/bg_non_interactive/cpuset.cpus"
-
-		log("Handling mpdecision upcall")
-
-		switch mpdecisionBlocked {
-		case 1:
-			cpus := "0"
-			if err = write(file, cpus); err != nil {
-				log(fmt.Sprintf("Failed to write '%s' to: %s", cpus, file))
-				break
-			}
-		case 0:
-			cpus := "0-3"
-			if err = write(file, cpus); err != nil {
-				log(fmt.Sprintf("Failed to write 3 to: %s", cpus, file))
-				break
-			}
-		default:
-			log("Unknown mpdecisionBlocked state:", mpdecisionBlocked)
-		}
-	}
-
-
-		for {
-			event := <-container.Watcher.Events
-			switch event {
-			default:
-				log("mpdecision_coexist_upcall file received event")
-				handleUpcall()
-			}
-		}
-	defer container.File.Close()
-	defer container.Watcher.Close()
-	container.NotifyChannel <- struct{}
-}
-*/
-
 func AddWatcher(container *InotifyContainer) (err error) {
 	log("Setting up watcher")
 
@@ -408,166 +183,6 @@ var (
 	isBlocked  = false
 	signalChan = make(chan struct{}, 0)
 )
-
-func BlockMpdecision(signal chan struct{}) {
-	var b []byte
-	var err error
-	var bgCpus string
-	var bgCgroupTf *gocommons.File
-	var bgCpusetTf *gocommons.File
-	//bgNotifyContainer := new(InotifyContainer)
-
-	bgCpuFile := "/sys/tempfreq/mpdecision_bg_cpu"
-	bgCpusetCpusFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.cpus"
-	bgCpusetMemsFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.mems"
-	bgCpusetTasksFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/tasks"
-	bgCgroupTasksFile := "/dev/cpuctl/bg_non_interactive/tasks"
-
-	if isBlocked {
-		log("Attempting to block mpdecision when blocked")
-		err = fmt.Errorf("Already blocked")
-		goto out
-	}
-
-	isBlocked = true
-
-	if b, err = ioutil.ReadFile(bgCpuFile); err != nil {
-		log(fmt.Sprintf("Failed to read '%s': %s", bgCpuFile, err))
-		return
-	}
-	bgCpus = string(b[:])
-
-	if err = write(bgCpusetMemsFile, "0"); err != nil {
-		log("Failed to set mems to '0':", err)
-		goto out
-	}
-	if err = write(bgCpusetCpusFile, bgCpus); err != nil {
-		log(fmt.Sprintf("Failed to set cpus to '%s':%v", bgCpus, err))
-		goto out
-	}
-
-	if bgCgroupTf, err = gocommons.Open(bgCgroupTasksFile, os.O_RDONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open bg cgroup tasks file for copying to bg cpuset")
-		goto out
-	}
-	defer bgCgroupTf.Close()
-
-	if bgCpusetTf, err = gocommons.Open(bgCpusetTasksFile, os.O_WRONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open bg cpuset tasks file for writing")
-		goto out
-	}
-	defer bgCpusetTf.Close()
-
-	if err = migrateTasks(bgCgroupTf, bgCpusetTf); err != nil {
-		log("Failed to migrate tasks from bg cgroup to bg cpuset")
-		goto out
-	}
-
-	// We don't add a watcher since the kernel takes care of doing this
-	// once we send it the signal that we've set up the cpuset
-	/*
-		bgNotifyContainer.FilePath = "/dev/cpuctl/bg_non_interactive/tasks"
-		bgNotifyContainer.NotifyChannel = make(chan struct{}, 0)
-		bgNotifyContainer.Handler = BgCgroupHandler
-		AddWatcher(bgNotifyContainer)
-	*/
-out:
-	// Signal that we're done
-	signal <- struct{}{}
-
-	if err == nil {
-		// Now wait for unblock to signal us to terminate
-		<-signalChan
-		log("Received signal to unblock")
-	}
-	//bgNotifyContainer.IsDone = true
-}
-
-func UnblockMpdecision(signal chan struct{}) {
-	var rootCpusetTf *gocommons.File
-	var bgCpusetTf *gocommons.File
-	var err error
-
-	rootTasksFile := "/sys/fs/cgroup/cpuset/tasks"
-	bgCpusetTasksFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/tasks"
-	bgCpusetCpusFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.cpus"
-	bgCpusetMemsFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.mems"
-
-	if !isBlocked {
-		log("Attempting to unblock mpdecision when not blocked")
-		goto out
-	}
-	// Signal block to terminate
-	signalChan <- struct{}{}
-	log("Sent signal to unblock")
-	isBlocked = false
-	if err = write(bgCpusetMemsFile, ""); err != nil {
-		log("Unblock: Failed to set mems to '':", err)
-		goto out
-	}
-	if err = write(bgCpusetCpusFile, ""); err != nil {
-		log(fmt.Sprintf("Unblock: Failed to set cpus to '':%v", err))
-		goto out
-	}
-
-	if bgCpusetTf, err = gocommons.Open(bgCpusetTasksFile, os.O_RDONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open root bg cpuset tasks file for copying to root cpuset")
-		return
-	}
-	defer bgCpusetTf.Close()
-
-	if rootCpusetTf, err = gocommons.Open(rootTasksFile, os.O_WRONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open root cpuset tasks file for writing")
-		return
-	}
-	defer rootCpusetTf.Close()
-
-	if err = migrateTasks(bgCpusetTf, rootCpusetTf); err != nil {
-		log(fmt.Sprintf("Unblock: Failed to migrate tasks:%v", err))
-		goto out
-	}
-out:
-	// Signal that we're done
-	signal <- struct{}{}
-}
-
-func NetlinkRecvHandler() {
-	var messages []syscall.NetlinkMessage
-	var err error
-
-	log("Starting NetlinkRecvHandler()")
-	signal := make(chan struct{}, 0)
-	for {
-		log("recvHandler loop")
-		if messages, err = Socket.Recv(); err != nil {
-			log("Failed recv:", err)
-		}
-		for m := range messages {
-			message := messages[m]
-
-			real_len := binary.LittleEndian.Uint32(message.Data[:4])
-			//log("Real len:", real_len)
-			text := strings.TrimSpace(string(message.Data[4 : 4+real_len]))
-			switch text {
-			case "0":
-				// Kernel is disabling mpdecision blocking
-				log("Kernel disabling mpdecision blocking")
-				go UnblockMpdecision(signal)
-				<-signal
-				Socket.SendString("0")
-			case "1":
-				// Kernel is enabling mpdecision blocking
-				log("Kernel enabling mpdecision blocking")
-				go BlockMpdecision(signal)
-				<-signal
-				Socket.SendString("1")
-			default:
-				log(fmt.Sprintf("Unknown message from kernel: '%s'", text))
-			}
-		}
-	}
-	log("Finished NetlinkRecvHandler()")
-}
 
 func Process() (err error) {
 	/*
