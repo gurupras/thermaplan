@@ -45,7 +45,6 @@ func NetlinkRecvHandler() {
 	var err error
 
 	log("Starting NetlinkRecvHandler()")
-	signal := make(chan struct{}, 0)
 	for {
 		log("recvHandler loop")
 		if messages, err = Socket.Recv(); err != nil {
@@ -54,7 +53,7 @@ func NetlinkRecvHandler() {
 		for m := range messages {
 			message := messages[m]
 
-			pos := uint32(0)
+			pos := 0
 			real_len := binary.LittleEndian.Uint32(message.Data[:pos+4])
 			_ = real_len
 			log("Real len:", real_len)
@@ -64,19 +63,19 @@ func NetlinkRecvHandler() {
 			log("cmdLen:", cmdLen)
 			pos += 4
 
-			cmdBytes := message.Data[pos : pos+16]
+			cmdBytes := message.Data[pos : pos+NETLINK_CMD_SIZE]
 			command := strings.TrimSpace(string(cmdBytes[:cmdLen]))
 			log("command:", command)
-			pos += 16
+			pos += NETLINK_CMD_SIZE
 
 			argsLen := binary.LittleEndian.Uint32(message.Data[pos : pos+4])
 			log("argsLen:", argsLen)
 			pos += 4
 
-			argsBytes := message.Data[pos : pos+24]
+			argsBytes := message.Data[pos : pos+NETLINK_ARGS_SIZE]
 			args := strings.TrimSpace(string(argsBytes[:argsLen]))
 			log("args:", args)
-			pos += 24
+			pos += NETLINK_ARGS_SIZE
 
 			cmd := new(NetlinkCmd)
 			cmd.Cmd = command
@@ -86,7 +85,9 @@ func NetlinkRecvHandler() {
 
 			switch cmd.Cmd {
 			case "mpdecision":
-				MpdecisionHandler(cmd, signal)
+				go MpdecisionHandler(cmd)
+			case "move_to_cgroup":
+				go MoveToCgroupHandler(cmd)
 			default:
 				log(fmt.Sprintf("Unknown command: %v", cmd.String()))
 			}

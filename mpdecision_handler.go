@@ -12,8 +12,9 @@ import (
 	"github.com/gurupras/gocommons"
 )
 
-func MpdecisionHandler(cmd *NetlinkCmd, signal chan struct{}) {
+func MpdecisionHandler(cmd *NetlinkCmd) {
 	args := strings.TrimSpace(string(cmd.Args[:]))
+	signal := make(chan struct{}, 0)
 	switch args {
 	case "0":
 		// Kernel is disabling mpdecision blocking

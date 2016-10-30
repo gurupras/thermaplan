@@ -9,6 +9,8 @@ import (
 
 const (
 	MPDECISION_COEXIST int = syscall.NETLINK_USERSOCK
+	NETLINK_CMD_SIZE   int = 24
+	NETLINK_ARGS_SIZE  int = 36
 )
 
 var (

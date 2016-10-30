@@ -26,7 +26,7 @@ func log(msg ...interface{}) {
 	LogBuf.Flush()
 }
 
-func write(path string, text string) (err error) {
+func write(path string, data interface{}) (err error) {
 	var file *gocommons.File
 	var writer gocommons.Writer
 
@@ -41,6 +41,7 @@ func write(path string, text string) (err error) {
 	defer writer.Close()
 	defer writer.Flush()
 
+	text := fmt.Sprintf("%v", data)
 	writer.Write([]byte(text))
 	log(fmt.Sprintf("Successfully wrote '%s' to %s", text, path))
 	return
