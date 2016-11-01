@@ -16,6 +16,7 @@ const (
 
 var (
 	Version        string
+	Timestamp      string
 	CpusetBasePath = "/sys/fs/cgroup/cpuset"
 	LogPath        = "/dev/kmsg"
 	LogBuf         *bufio.Writer
@@ -55,7 +56,7 @@ func init_logger() {
 	}
 	LogBuf = bufio.NewWriter(log_file)
 
-	log(fmt.Sprintf("%s - %s", os.Args[0], Version))
+	log(fmt.Sprintf("%s - %s (%s)", os.Args[0], Version, Timestamp))
 
 }
 

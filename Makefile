@@ -15,10 +15,11 @@ all: binary
 arm: GOARCH=arm
 arm: binary
 
-VERSION=$(shell date +%Y-%m-%d.%H:%M:%S)
+VERSION=$(shell git rev-parse --short HEAD)
+TIMESTAMP=$(shell date +%Y-%m-%d.%H:%M:%S)
 
 binary:
-	GOARCH=$(GOARCH) go build -ldflags "-X main.Version=$(VERSION)" -o $(PROG_NAME) $(sources_go)
+	GOARCH=$(GOARCH) go build -ldflags "-X main.Version=$(VERSION) -X main.Timestamp=$(TIMESTAMP)" -o $(PROG_NAME) $(sources_go)
 
 shared:
 	go build -buildmode=c-shared -o libaosp_su_daemon.so $(sources_go)
