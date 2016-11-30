@@ -88,6 +88,8 @@ func NetlinkRecvHandler() {
 				go MpdecisionHandler(cmd)
 			case "move_to_cgroup":
 				go MoveToCgroupHandler(cmd)
+			case "cpuset":
+				go CpusetHandler(cmd)
 			default:
 				log(fmt.Sprintf("Unknown command: %v", cmd.String()))
 			}
