@@ -137,10 +137,15 @@ func BlockMpdecision(signal chan struct{}) {
 		log("Failed to migrate tasks from bg cgroup to bg cpuset")
 		goto out
 	}
-	if err = migrateTasks(fgBgCgroupTasksFile, fgBgCpusetTasksFile); err != nil {
-		log("Failed to migrate tasks from bg cgroup to bg cpuset")
-		goto out
-	}
+
+	_ = fgBgCgroupTasksFile
+	_ = fgBgCpusetTasksFile
+	/*
+		if err = migrateTasks(fgBgCgroupTasksFile, fgBgCpusetTasksFile); err != nil {
+			log("Failed to migrate tasks from bg cgroup to bg cpuset")
+			goto out
+		}
+	*/
 
 	// We don't add a watcher since the kernel takes care of doing this
 	// once we send it the signal that we've set up the cpuset
@@ -192,10 +197,14 @@ func UnblockMpdecision(signal chan struct{}) {
 		log(fmt.Sprintf("Unblock: Failed to migrate tasks from bg_non_interactive to root:%v", err))
 		goto out
 	}
-	if err = migrateTasks(fgBgCpusetTasksFile, rootCpusetTasksFile); err != nil {
-		log(fmt.Sprintf("Unblock: Failed to migrate tasks from fg_bg to root:%v", err))
-		goto out
-	}
+
+	_ = fgBgCpusetTasksFile
+	/*
+		if err = migrateTasks(fgBgCpusetTasksFile, rootCpusetTasksFile); err != nil {
+			log(fmt.Sprintf("Unblock: Failed to migrate tasks from fg_bg to root:%v", err))
+			goto out
+		}
+	*/
 out:
 	// Signal that we're done
 	signal <- struct{}{}

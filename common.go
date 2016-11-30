@@ -99,7 +99,7 @@ func migrateTasks(inputFile, outputFile string) (err error) {
 		pid := reader.Text()
 		if _, err = writer.Write([]byte(pid)); err != nil {
 			log(fmt.Sprintf("Failed to write '%s' > %s", pid, tmpOutputFile.Path))
-			return
+			continue
 		}
 		writer.Flush()
 	}
