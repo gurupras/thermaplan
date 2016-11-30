@@ -60,16 +60,23 @@ func init_logger() {
 
 }
 
-func migrateTasks(inputFile, outputFile *gocommons.File) (err error) {
+func migrateTasks(inputFile, outputFile string) (err error) {
 	var tmpInputFile *gocommons.File
+	var tmpOutputFile *gocommons.File
 	var reader *bufio.Scanner
 	var writer gocommons.Writer
 
-	if tmpInputFile, err = gocommons.Open(inputFile.Path, os.O_RDONLY, gocommons.GZ_FALSE); err != nil {
+	if tmpInputFile, err = gocommons.Open(inputFile, os.O_RDONLY, gocommons.GZ_FALSE); err != nil {
 		log("Could not open bg cgroup tasks file for copying to bg cpuset")
 		return
 	}
 	defer tmpInputFile.Close()
+
+	if tmpOutputFile, err = gocommons.Open(outputFile, os.O_WRONLY, gocommons.GZ_FALSE); err != nil {
+		log("Could not open bg cgroup tasks file for copying to bg cpuset")
+		return
+	}
+	defer tmpOutputFile.Close()
 
 	if _, err = tmpInputFile.Seek(0, 0); err != nil {
 		log("Failed to seek on:", tmpInputFile.Path)
@@ -79,7 +86,7 @@ func migrateTasks(inputFile, outputFile *gocommons.File) (err error) {
 		log("Could not get reader to inputFile")
 		return
 	}
-	if writer, err = outputFile.Writer(0); err != nil {
+	if writer, err = tmpOutputFile.Writer(0); err != nil {
 		log("Could not get writer to bg cpuset tasks file")
 		return
 	}
@@ -91,12 +98,12 @@ func migrateTasks(inputFile, outputFile *gocommons.File) (err error) {
 		numLines++
 		pid := reader.Text()
 		if _, err = writer.Write([]byte(pid)); err != nil {
-			log(fmt.Sprintf("Failed to write '%s' > %s", pid, outputFile.Path))
+			log(fmt.Sprintf("Failed to write '%s' > %s", pid, tmpOutputFile.Path))
 			return
 		}
 		writer.Flush()
 	}
-	log(fmt.Sprintf("cat %s > %s (Wrote: %d lines)", tmpInputFile.Path, outputFile.Path, numLines))
+	log(fmt.Sprintf("cat %s > %s (Wrote: %d lines)", tmpInputFile.Path, tmpOutputFile.Path, numLines))
 	return
 }
 

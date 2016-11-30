@@ -101,29 +101,13 @@ out:
 }
 
 func FgBgMigrationHandler(container *InotifyContainer) {
-	fgBgTfPath := "/dev/cpuctl/fg_bg/tasks"
+	fgBgCgroupTfPath := "/dev/cpuctl/fg_bg/tasks"
 	bgCgroupTfPath := "/dev/cpuctl/bg_non_interactive/tasks"
 
 	log("Starting watcher: FgBgMigration")
 
-	var fgBgTf *gocommons.File
-	var bgCgroupTf *gocommons.File
-	var err error
-
-	if fgBgTf, err = gocommons.Open(fgBgTfPath, os.O_RDONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open bg cgroup tasks file for copying to bg cpuset")
-		return
-	}
-	defer fgBgTf.Close()
-
-	if bgCgroupTf, err = gocommons.Open(bgCgroupTfPath, os.O_WRONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open bg cpuset tasks file for writing")
-		return
-	}
-	defer bgCgroupTf.Close()
-
 	work := func() error {
-		return migrateTasks(fgBgTf, bgCgroupTf)
+		return migrateTasks(fgBgCgroupTfPath, bgCgroupTfPath)
 	}
 	GroupRequests(container, 100*time.Millisecond, 150*time.Millisecond, fsnotify.Write, work)
 
@@ -139,24 +123,8 @@ func BgCgroupHandler(container *InotifyContainer) {
 	bgCgroupHandlerStarted = true
 	log("Starting watcher: bgCgroup")
 
-	var bgCgroupTf *gocommons.File
-	var bgCpusetTf *gocommons.File
-	var err error
-
-	if bgCgroupTf, err = gocommons.Open(container.FilePath, os.O_RDONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open bg cgroup tasks file for copying to bg cpuset")
-		return
-	}
-	defer bgCgroupTf.Close()
-
-	if bgCpusetTf, err = gocommons.Open(bgCpusetTasksFile, os.O_WRONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open bg cpuset tasks file for writing")
-		return
-	}
-	defer bgCpusetTf.Close()
-
 	work := func() error {
-		return migrateTasks(bgCgroupTf, bgCpusetTf)
+		return migrateTasks(container.FilePath, bgCpusetTasksFile)
 	}
 
 	GroupRequests(container, 100*time.Millisecond, 150*time.Millisecond, fsnotify.Write, work)

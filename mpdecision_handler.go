@@ -3,13 +3,11 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/gurupras/gocommons"
 )
 
 func MpdecisionHandler(cmd *NetlinkCmd) {
@@ -101,8 +99,6 @@ func BlockMpdecision(signal chan struct{}) {
 	var b []byte
 	var err error
 	var bgCpus string
-	var bgCgroupTf *gocommons.File
-	var bgCpusetTf *gocommons.File
 	//bgNotifyContainer := new(InotifyContainer)
 
 	bgCpuFile := "/sys/tempfreq/mpdecision_bg_cpu"
@@ -110,6 +106,9 @@ func BlockMpdecision(signal chan struct{}) {
 	bgCpusetMemsFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.mems"
 	bgCpusetTasksFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/tasks"
 	bgCgroupTasksFile := "/dev/cpuctl/bg_non_interactive/tasks"
+
+	fgBgCgroupTasksFile := "/dev/cpuctl/fg_bg/tasks"
+	fgBgCpusetTasksFile := "/sys/fs/cgroup/cpuset/cs_fg_bg/tasks"
 
 	if isBlocked {
 		log("Attempting to block mpdecision when blocked")
@@ -134,19 +133,11 @@ func BlockMpdecision(signal chan struct{}) {
 		goto out
 	}
 
-	if bgCgroupTf, err = gocommons.Open(bgCgroupTasksFile, os.O_RDONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open bg cgroup tasks file for copying to bg cpuset")
+	if err = migrateTasks(bgCgroupTasksFile, bgCpusetTasksFile); err != nil {
+		log("Failed to migrate tasks from bg cgroup to bg cpuset")
 		goto out
 	}
-	defer bgCgroupTf.Close()
-
-	if bgCpusetTf, err = gocommons.Open(bgCpusetTasksFile, os.O_WRONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open bg cpuset tasks file for writing")
-		goto out
-	}
-	defer bgCpusetTf.Close()
-
-	if err = migrateTasks(bgCgroupTf, bgCpusetTf); err != nil {
+	if err = migrateTasks(fgBgCgroupTasksFile, fgBgCpusetTasksFile); err != nil {
 		log("Failed to migrate tasks from bg cgroup to bg cpuset")
 		goto out
 	}
@@ -172,14 +163,13 @@ out:
 }
 
 func UnblockMpdecision(signal chan struct{}) {
-	var rootCpusetTf *gocommons.File
-	var bgCpusetTf *gocommons.File
 	var err error
 
-	rootTasksFile := "/sys/fs/cgroup/cpuset/tasks"
+	rootCpusetTasksFile := "/sys/fs/cgroup/cpuset/tasks"
 	bgCpusetTasksFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/tasks"
 	bgCpusetCpusFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.cpus"
 	bgCpusetMemsFile := "/sys/fs/cgroup/cpuset/cs_bg_non_interactive/cpuset.mems"
+	fgBgCpusetTasksFile := "/sys/fs/cgroup/cpuset/cs_fg_bg/tasks"
 
 	if !isBlocked {
 		log("Attempting to unblock mpdecision when not blocked")
@@ -198,20 +188,12 @@ func UnblockMpdecision(signal chan struct{}) {
 		goto out
 	}
 
-	if bgCpusetTf, err = gocommons.Open(bgCpusetTasksFile, os.O_RDONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open root bg cpuset tasks file for copying to root cpuset")
-		return
+	if err = migrateTasks(bgCpusetTasksFile, rootCpusetTasksFile); err != nil {
+		log(fmt.Sprintf("Unblock: Failed to migrate tasks from bg_non_interactive to root:%v", err))
+		goto out
 	}
-	defer bgCpusetTf.Close()
-
-	if rootCpusetTf, err = gocommons.Open(rootTasksFile, os.O_WRONLY, gocommons.GZ_FALSE); err != nil {
-		log("Could not open root cpuset tasks file for writing")
-		return
-	}
-	defer rootCpusetTf.Close()
-
-	if err = migrateTasks(bgCpusetTf, rootCpusetTf); err != nil {
-		log(fmt.Sprintf("Unblock: Failed to migrate tasks:%v", err))
+	if err = migrateTasks(fgBgCpusetTasksFile, rootCpusetTasksFile); err != nil {
+		log(fmt.Sprintf("Unblock: Failed to migrate tasks from fg_bg to root:%v", err))
 		goto out
 	}
 out:
