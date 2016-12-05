@@ -110,6 +110,9 @@ func BlockMpdecision(signal chan struct{}) {
 	fgBgCgroupTasksFile := "/dev/cpuctl/fg_bg/tasks"
 	fgBgCpusetTasksFile := "/sys/fs/cgroup/cpuset/cs_fg_bg/tasks"
 
+	fgBgCpusetCpusFile := "/sys/fs/cgroup/cpuset/cs_fg_bg/cpuset.cpus"
+	fgBgCpusetMemsFile := "/sys/fs/cgroup/cpuset/cs_fg_bg/cpuset.mems"
+
 	if isBlocked {
 		log("Attempting to block mpdecision when blocked")
 		err = fmt.Errorf("Already blocked")
@@ -137,6 +140,9 @@ func BlockMpdecision(signal chan struct{}) {
 		log("Failed to migrate tasks from bg cgroup to bg cpuset")
 		goto out
 	}
+
+	write(fgBgCpusetCpusFile, "0-3")
+	write(fgBgCpusetMemsFile, "0")
 
 	_ = fgBgCgroupTasksFile
 	_ = fgBgCpusetTasksFile
